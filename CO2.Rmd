@@ -1,0 +1,359 @@
+---
+title: "Análisis de las emisiones de gases de efecto invernadero (GEI) producto de la actividad agropecuaria en la región central"
+subtitle: "Análisis de varianza y regresión lineal con R"
+author: "Edimer David Jaramillo., Paola Betancur García"
+date: "26 de marzo de 2020"
+output: 
+    html_document:
+      toc: true
+      df_print: paged
+      theme: cerulean
+      code_folding: hide
+      css: estilo.css
+      highlight: kate
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.align = "center")
+```
+
+<center>
+<img src="img/1.jpg" width=900/>
+</center>
+
+# Fuente de datos
+
+- [Datos abiertos Colombia](https://www.datos.gov.co/Agricultura-y-Desarrollo-Rural/ANALISIS-DE-LAS-EMISIONES-DE-GASES-DE-EFECTO-INVER/25nw-b8kq)
+
+# Recursos de información
+
+- [Análisis de varianza](https://es.wikipedia.org/wiki/An%C3%A1lisis_de_la_varianza). 
+    * Variable respuesta de tipo numérica (cuantitativa)
+    * Variables predictoras (fuentes de variación) categóricas (cualitativas)
+    * Análisis de varianza de una o más vías
+    * Se debe cumplir el supuesto de normalidad de los residuales
+    * Se debe cumplir el supuesto de homocedasticidad (varianza constante) de los residuales
+    * Se debe cumplir el supuesto de independencia
+- [Regresión lineal](https://es.wikipedia.org/wiki/Regresi%C3%B3n_lineal)
+    * Variable respuesta de tipo numérica (cuantitativa)
+    * Variables predictoras (fuentes de variación) categóricas (variables indicadoras) y/o numéricas (cuantitativas)
+    * Se debe cumplir el supuesto de normalidad de los residuales
+    * Se debe cumplir el supuesto de homocedasticidad (varianza constante) de los residuales
+    * Se debe cumplir el supuesto de independencia
+- [Análisis de covarianza](https://es.wikipedia.org/wiki/An%C3%A1lisis_de_la_covarianza)
+    * Variable respuesta de tipo numérica (cuantitativa)
+    * Variables predictoras (fuentes de variación) categóricas (cualitativas) y numéricas (cuantitativas)
+    * Se debe cumplir el supuesto de normalidad de los residuales
+    * Se debe cumplir el supuesto de homocedasticidad (varianza constante) de los residuales
+    * Se debe cumplir el supuesto de independencia
+- **Los tres métodos anteriores están dentro del marco de [modelos lineales](https://es.wikipedia.org/wiki/Modelo_lineal).**
+
+# Datos
+
+- Importación de datos
+- Edición de nombres
+- Selección de variables de interés
+- Depuración de la variable departamento
+- Se generó la variable `sum_em` (suma total de emisiones)
+
+```{r}
+# Lectura de datos
+datos <- read.csv(file = "https://www.datos.gov.co/api/views/25nw-b8kq/rows.csv?accessType=DOWNLOAD")
+
+# Depuración de datos
+library(tidyverse)
+library(Hmisc)
+datos %>% 
+  select(depto = Departamentos,
+         total_pred = Total.predios,
+         total_bov = Total.Bovinos...2017,
+         area_agri = Area.total.sembrada.del.sector.agricola,
+         area_fores = Agroforestal..Ha.,
+         area_cons = ConservaciOn.de.Suelos...Ha.,
+         area_gan = Ganadera..Ha.,
+         em_agri = Emisiones.Sector.AgrIcola..Miles.de.ton.CO2.eq.,
+         em_fores = Emisiones.Sector.Forestal..Miles.de.ton.CO2.eq.,
+         em_pec = Sector.Pecuario..Miles.de.ton.CO2.eq.) %>% 
+  mutate(depto = capitalize(tolower(depto)),
+         depto = gsub("Boyaca", "Boyacá", depto, ignore.case = TRUE),
+         depto = gsub("Distrito capital", "Cundinamarca", depto,
+                      ignore.case = TRUE),
+         sum_em = em_agri + em_fores + em_pec) -> 
+  datos2
+
+datos2
+```
+
+# Análisis exploratorio {.tabset .tabset-fade .tabset-pills}
+
+- Densidades: escala original y logarítmica.
+- Correlaciones de Pearson con escalas logarítmicas.
+- Distribución del total de emisiones (escala logarítmica) por departamento.
+- Diagramas de dispersión general y por departamento en escala logarítmica.
+
+## Densidades originales
+
+```{r, fig.width=9, fig.height=6}
+datos2 %>% 
+  select_if(is.numeric) %>% 
+  gather() %>% 
+  ggplot(data = ., aes(x = value)) +
+  facet_wrap(~key, scales = "free") +
+  geom_density() +
+  ggtitle("Escala original")
+```
+
+## Distribuciones (logaritmos)
+
+```{r, fig.width=9, fig.height=6}
+datos2 %>% 
+  select_if(is.numeric) %>% 
+  gather() %>% 
+  ggplot(data = ., aes(x = value)) +
+  facet_wrap(~key, scales = "free") +
+  geom_density() +
+  scale_x_log10() +
+  ggtitle("Escala logarítmica")
+```
+
+
+## Correlaciones
+
+```{r, fig.width= 9}
+library(corrplot)
+library(RColorBrewer)
+datos2 %>% 
+  select_if(is.numeric) %>% 
+  select(-c(em_agri:em_pec)) %>% 
+  mutate_if(is.numeric, log) %>% 
+  filter_all(all_vars(.>0)) %>% 
+  cor(use = "pairwise.complete.obs") %>% 
+  corrplot(type = "upper", diag = FALSE, tl.srt = 45, tl.col = "black", 
+           method = "pie", addgrid.col = "black", 
+           col = brewer.pal(n = 8, name = "RdBu"))
+```
+
+## Distribución por departamento
+
+```{r, fig.width=9, fig.height=10}
+library(jcolors)
+
+datos2 %>% 
+  select(which(sapply(datos2,class) %in% c("numeric", "integer")), depto) %>% 
+  gather(key = "variable", value = "valor", -depto) %>% 
+  mutate(valor = log10(valor)) %>% 
+  ggplot(data = ., aes(x = depto, y = valor, fill = depto)) +
+  geom_boxplot() +
+  scale_fill_jcolors(palette = "pal3") +
+  facet_wrap(facets = ~variable, scales = "free", ncol = 3) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.position = "none")
+```
+
+## Dispersiones {.tabset}
+
+### Graficación base (`graphics`)
+
+```{r}
+plot(datos2$total_bov, datos2$sum_em, log = "xy")
+abline(lm(log10(datos2$sum_em) ~ log10(datos2$total_bov)), 
+       col = "red")
+```
+
+### Graficación con `ggplot2`
+
+```{r}
+datos2 %>% 
+  ggplot(., aes(x = total_bov, y = sum_em)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE, color = "red")
+```
+
+```{r}
+datos2 %>% 
+  ggplot(., aes(x = total_bov, y = sum_em, color = depto)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_jcolors(palette = "pal3") +
+  theme(legend.position = "bottom") +
+  labs(color = "")
+```
+
+### Todas vs sumatoria de emisiones
+
+```{r, fig.width=9}
+datos2 %>% 
+  select(-c(em_agri:em_pec)) %>% 
+  gather(key = "variable", value = "valor", -c(sum_em, depto)) %>% 
+  ggplot(data = ., aes(x = valor, y = sum_em, color = depto)) +
+  facet_wrap(~ variable, scales = "free") +
+  geom_point(alpha = 0.3) +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_jcolors(palette = "pal3") +
+  theme(legend.position = "bottom") +
+  labs(color = "")
+```
+
+## Análisis de componentes principales {.tabset}
+
+### Resumen ACP
+
+```{r}
+library(FactoMineR)
+datos2 %>% 
+  select(-c(em_agri:em_pec, depto)) %>% 
+  mutate(area_fores = log10(area_fores+1),
+         area_cons = log10(area_cons+1),
+         area_gan = log10(area_gan+1),
+         total_pred = log10(total_pred),
+         total_bov = log10(total_bov),
+         area_agri = log10(area_agri),
+         sum_em = log10(sum_em))-> datos_acp
+acp <- PCA(X = datos_acp, scale.unit = TRUE, graph = FALSE)
+summary(acp)
+```
+
+### Componente 1 vs Componente 2
+
+* Se deben ingresar a la base de datos original (datos2) las nuevas coordenadas obtenidas con ACP
+
+```{r, fig.width=9}
+datos2$cp1 <- acp$ind$coord[,1]
+datos2$cp2 <- acp$ind$coord[,2]
+datos2$cp3 <- acp$ind$coord[,3]
+library(factoextra)
+library(ggpubr)
+ggarrange(
+  datos2 %>% 
+  ggplot(data = ., aes(x = cp1, y = cp2, color = depto)) +
+  geom_point() +
+  geom_vline(xintercept = 0, color = "red", lty = 2, size = 0.5) +
+  geom_hline(yintercept = 0, color = "red", lty = 2, size = 0.5) +
+  scale_color_jcolors(palette = "pal3") +
+  theme(legend.position = "bottom") +
+  labs(color = ""),
+  
+  fviz_pca_var(acp, axes = c(1,2)),
+  
+  ncol = 2
+)
+
+
+
+
+```
+
+### CP1 vs CP3
+
+```{r, fig.width=9}
+ggarrange(
+  datos2 %>% 
+  ggplot(data = ., aes(x = cp1, y = cp3, color = depto)) +
+  geom_point() +
+  geom_vline(xintercept = 0, color = "red", lty = 2, size = 0.5) +
+  geom_hline(yintercept = 0, color = "red", lty = 2, size = 0.5) +
+  scale_color_jcolors(palette = "pal3") +
+  theme(legend.position = "bottom") +
+  labs(color = ""),
+  
+  fviz_pca_var(acp, axes = c(1,3)),
+  
+  ncol = 2
+)
+```
+
+### CP2 vs CP3
+
+```{r, fig.width=9}
+ggarrange(
+  datos2 %>% 
+  ggplot(data = ., aes(x = cp2, y = cp3, color = depto)) +
+  geom_point() +
+  geom_vline(xintercept = 0, color = "red", lty = 2, size = 0.5) +
+  geom_hline(yintercept = 0, color = "red", lty = 2, size = 0.5) +
+  scale_color_jcolors(palette = "pal3") +
+  theme(legend.position = "bottom") +
+  labs(color = ""),
+  
+  fviz_pca_var(acp, axes = c(2,3)),
+  
+  ncol = 2
+)
+```
+
+### CP1, CP2 y CP3
+
+```{r}
+library(plotly)
+
+plot_ly(data = datos2, x = ~cp1, y = ~cp2, z = ~cp3, color = ~depto) %>% 
+  add_markers()
+```
+
+# Análisis de varianza {.tabset}
+
+- Con el modelo de análisis de varianza se contrasta la diferencia estadística para la suma de emisiones por departamentos (fuente de variación); bajo el siguiente juego de hipótesis: 
+
+$$H_0: \mu_{Boyacá} = \mu_{Cundinamarca} = \mu_{Meta} = \mu_{Tolima} \\
+H_1: \mu_i \neq \mu_j$$
+
+- Si el valor p es menor que $\alpha=0.05$ se rechaza la hipótesis nula, es decir, que existe diferencia estadísticamente significativa entre al menos un par de departamentos.
+
+## Modelo originales
+
+```{r}
+modelo_anova1 <- aov(sum_em ~ depto, data = datos2)
+summary(object = modelo_anova1)
+```
+
+## Modelo logaritmos
+
+```{r}
+modelo_anova2 <- aov(sum_em ~ depto, data = datos2 %>% 
+                      mutate(sum_em = log(sum_em)))
+summary(object = modelo_anova2)
+```
+
+## Residuales originales
+
+```{r}
+par(mfrow = c(2,2))
+plot(modelo_anova1)
+```
+
+## Residuales logarítmicos
+
+```{r}
+par(mfrow = c(2,2))
+plot(modelo_anova2)
+```
+
+## Comparaciones de medias - Tukey
+
+```{r}
+TukeyHSD(x = modelo_anova1, conf.level = 0.95)
+```
+
+## Comparación de medias gráfico
+
+```{r, fig.width=9}
+library(broom)
+tidy(TukeyHSD(x = modelo_anova1, conf.level = 0.95)) %>% 
+  ggplot(data = ., aes(x = reorder(comparison, estimate), y = estimate,
+                       ymin = conf.low, ymax = conf.high)) +
+  geom_errorbar(width = 0.2) +
+  geom_point() +
+  geom_hline(yintercept = 0, lty =2, color = "red", size = 0.5) +
+  labs(x = "") +
+  coord_flip() 
+
+```
